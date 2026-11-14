@@ -2,11 +2,7 @@
 
 把 OBS 的**一路推流**同时分发到多个 RTMP/RTMPS 平台（B 站 / 抖音 / 快手 /
 YouTube / Twitch…）。本目录是**面向 Windows 的构建工程**，由官方
-[obs-plugintemplate](https://github.com/obsproject/obs-plugintemplate) 改造而来；
-Linux 那边的原生构建仍在本仓库的 `../obs-multistream`。
-
-> 功能说明、实现细节、已知限制见上一级目录的 `README.md`，这里只讲**怎么在
-> Windows 上把它编出来、装上去**。
+[obs-plugintemplate](https://github.com/obsproject/obs-plugintemplate) 改造而来。
 
 ## 安装到 OBS
 
@@ -37,16 +33,3 @@ Linux 那边的原生构建仍在本仓库的 `../obs-multistream`。
 - 运行时依赖 OBS 自带的 `obs-outputs.dll`（提供 `rtmp_output`）与
   `rtmp-services.dll`（提供 `rtmp_custom`），官方安装包默认自带。
 - 配置保存在 `%APPDATA%\obs-studio\plugin_config\obs-multistream\targets.json`。
-
-## 目录结构
-
-```
-CMakeLists.txt          # 插件目标定义（已开启 frontend-api + Qt）
-CMakePresets.json       # windows-x64 预设
-buildspec.json          # 名字/版本/依赖版本与哈希
-build-windows.ps1       # 本机一键构建 + 打包
-src/                    # 插件源码（与 Linux 版一致）
-data/locale/            # 中英文语言文件
-cmake/                  # 官方模板的 CMake 辅助模块（windows/ 为主）
-.github/workflows/build-windows.yaml   # CI：MSVC 出包
-```
