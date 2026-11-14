@@ -1,0 +1,132 @@
+name: Build Windows Plugin
+
+# Produces a ready-to-use, drop-in Windows package:
+#   obs-multistream/bin/64bit/obs-multistream.dll
+#   obs-multistream/data/locale/*.ini
+# Unzip into %APPDATA%\obs-studio\plugins\ and restart OBS.
+#
+# MSVC (windows-2022 runner) against the official OBS libobs +
+# obs-frontend-api and the matching Qt6, so the DLL's C++ ABI lines up with
+# OBS itself. The pinned dependencies (obs-deps + Qt6 2025-07-11, OBS 31.1.1
+# sources) are downloaded by CMake during configure -- see
+# cmake/common/buildspec_common.cmake, so no extra bootstrapping step is
+# needed here.
+
+on:
+  push:
+    branches: [master, main]
+    tags: ['*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# A newer push to the same ref cancels the older run.
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    name: Build for Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # The release step needs the tag, not just the commit.
+          fetch-depth: 0
+
+      # First run downloads ~300 MB of pinned dependencies into .deps; keeping
+      # the archives around makes later runs much shorter. The extracted OBS
+      # build tree is deliberately not cached (it is several GB).
+      - name: Cache OBS dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            .deps/*.zip
+            .deps/obs-deps-*
+            .deps/.dependency_*
+          key: obs-deps-${{ runner.os }}-x64-${{ hashFiles('buildspec.json') }}
+          restore-keys: |
+            obs-deps-${{ runner.os }}-x64-
+
+      - name: Toolchain info
+        shell: pwsh
+        run: |
+          cmake --version
+          Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Lib" -ErrorAction SilentlyContinue |
+            Select-Object Name
+
+      # cmake/common/compiler_common.cmake defaults
+      # CMAKE_COMPILE_WARNING_AS_ERROR to ON, which turns every MSVC /W3
+      # warning into a hard error. Keep the build lenient until the sources
+      # are warning-clean, then remove the -D...=OFF switch.
+      - name: Configure
+        shell: pwsh
+        run: cmake --preset windows-x64 -DCMAKE_COMPILE_WARNING_AS_ERROR=OFF
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build --preset windows-x64 --config RelWithDebInfo --parallel
+
+      - name: Install (staged release tree)
+        shell: pwsh
+        run: cmake --install build_x64 --prefix release/RelWithDebInfo --config RelWithDebInfo
+
+      # Without this, a layout change could silently ship an empty zip.
+      - name: Verify staged plugin
+        shell: pwsh
+        run: |
+          $stage = "release/RelWithDebInfo"
+          $dll   = Join-Path $stage "obs-multistream/bin/64bit/obs-multistream.dll"
+          if (-not (Test-Path $dll)) { throw "expected DLL not found: $dll" }
+          $locale = Join-Path $stage "obs-multistream/data/locale"
+          if (-not (Get-ChildItem $locale -Filter *.ini -ErrorAction SilentlyContinue)) {
+            throw "locale files missing under $locale"
+          }
+          Get-ChildItem -Recurse $stage | Select-Object FullName, Length
+
+      - name: Read version
+        id: ver
+        shell: pwsh
+        run: |
+          $spec = Get-Content buildspec.json -Raw | ConvertFrom-Json
+          "name=$($spec.name)"       >> $env:GITHUB_OUTPUT
+          "version=$($spec.version)" >> $env:GITHUB_OUTPUT
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          $name    = "${{ steps.ver.outputs.name }}"
+          $version = "${{ steps.ver.outputs.version }}"
+          $outName = "$name-$version-windows-x64"
+          $stage   = "release/RelWithDebInfo"
+          $zip     = "release/$outName.zip"
+          Remove-Item $zip -Force -ErrorAction SilentlyContinue
+          # Zip the plugin directory itself so the archive unpacks to
+          # obs-multistream/... and can be dropped straight into
+          # %APPDATA%\obs-studio\plugins\.
+          Compress-Archive -Force -CompressionLevel Optimal `
+            -Path (Join-Path $stage $name) `
+            -DestinationPath $zip
+          if (-not (Test-Path $zip)) { throw "zip was not created: $zip" }
+          Write-Host "Created $zip"
+          Get-Item $zip | Select-Object FullName, Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: obs-multistream-windows-x64
+          path: release/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach to release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: release/*.zip
